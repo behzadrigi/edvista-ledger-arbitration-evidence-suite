@@ -23,7 +23,7 @@ class EvidenceCorroboration(gl.Contract):
     def __init__(self):
         self.next_id = u256(0)
 
-    # ================= CREATE EVIDENCE =================
+    # ================= CREATE =================
 
     @gl.public.write
     def submit_evidence(self, agent: str, content: str) -> u256:
@@ -43,10 +43,51 @@ class EvidenceCorroboration(gl.Contract):
 
         return eid
 
-    # ================= NONDET CORROBORATION =================
+    # ================= UPDATE =================
 
     @gl.public.write
-    def evaluate_evidence(self, evidence_id: u256):
+    def update_evidence(self, evidence_id: u256, new_content: str):
+        assert evidence_id in self.evidences, "Evidence not found"
+        assert new_content.strip() != "", "Content cannot be empty"
+
+        ev = self.evidences[evidence_id]
+        assert ev.status == "PENDING", "Cannot update resolved evidence"
+
+        ev.content = new_content
+        self.evidences[evidence_id] = ev
+
+        return True
+
+    # ================= DELETE =================
+
+    @gl.public.write
+    def delete_evidence(self, evidence_id: u256):
+        assert evidence_id in self.evidences, "Evidence not found"
+
+        ev = self.evidences[evidence_id]
+        assert ev.status == "PENDING", "Cannot delete resolved evidence"
+
+        del self.evidences[evidence_id]
+        return True
+
+    # ================= RESET =================
+
+    @gl.public.write
+    def reset_evidence(self, evidence_id: u256):
+        assert evidence_id in self.evidences, "Evidence not found"
+
+        ev = self.evidences[evidence_id]
+        ev.status = "PENDING"
+        ev.verdict = ""
+        ev.confidence = u256(0)
+        self.evidences[evidence_id] = ev
+
+        return True
+
+    # ================= STRICT EVALUATION =================
+
+    @gl.public.write
+    def evaluate_evidence_strict(self, evidence_id: u256):
         assert evidence_id in self.evidences, "Evidence not found"
 
         ev = self.evidences[evidence_id]
@@ -56,38 +97,33 @@ class EvidenceCorroboration(gl.Contract):
 
         def leader_fn():
             prompt = f"""
-            You are an impartial evidence analyst.
+            STRICT MODE:
 
-            Evidence content:
+            Evidence:
             {content}
 
             Respond ONLY with JSON:
             {{
                 "verdict": "VALID" or "INVALID",
-                "confidence": <integer: 60, 70, 80, 90>
+                "confidence": <integer: 80, 90>
             }}
-
-            Rules:
-            - VALID: evidence supports the claim.
-            - INVALID: evidence does not support the claim.
-            - confidence must be one of: 60, 70, 80, 90.
             """
 
             response = gl.nondet.exec_prompt(prompt)
             try:
                 data = json.loads(response)
-            except Exception:
+            except:
                 raise gl.vm.UserError("[LLM_ERROR] invalid JSON")
 
             verdict = str(data.get("verdict", "")).upper()
             confidence = int(data.get("confidence", 0))
 
             assert verdict in ("VALID", "INVALID"), "[LLM_ERROR] invalid verdict"
-            assert confidence in (60, 70, 80, 90), "[LLM_ERROR] invalid confidence"
+            assert confidence in (80, 90), "[LLM_ERROR] invalid confidence"
 
             return {"verdict": verdict, "confidence": confidence}
 
-        def validator_fn(leader_result) -> bool:
+        def validator_fn(leader_result):
             if not isinstance(leader_result, gl.vm.Return):
                 return False
 
@@ -104,15 +140,75 @@ class EvidenceCorroboration(gl.Contract):
 
         result = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
 
-        verdict = result["verdict"]
-        confidence = u256(result["confidence"])
-
-        ev.verdict = verdict
-        ev.confidence = confidence
+        ev.verdict = result["verdict"]
+        ev.confidence = u256(result["confidence"])
         ev.status = "RESOLVED"
         self.evidences[evidence_id] = ev
 
-        return {"verdict": verdict, "confidence": int(confidence)}
+        return result
+
+    # ================= SOFT EVALUATION =================
+
+    @gl.public.write
+    def evaluate_evidence_soft(self, evidence_id: u256):
+        assert evidence_id in self.evidences, "Evidence not found"
+
+        ev = self.evidences[evidence_id]
+        assert ev.status == "PENDING", "Already evaluated"
+
+        content = ev.content
+
+        def leader_fn():
+            prompt = f"""
+            SOFT MODE:
+
+            Evidence:
+            {content}
+
+            Respond ONLY with JSON:
+            {{
+                "verdict": "VALID" or "INVALID",
+                "confidence": <integer: 60, 70>
+            }}
+            """
+
+            response = gl.nondet.exec_prompt(prompt)
+            try:
+                data = json.loads(response)
+            except:
+                raise gl.vm.UserError("[LLM_ERROR] invalid JSON")
+
+            verdict = str(data.get("verdict", "")).upper()
+            confidence = int(data.get("confidence", 0))
+
+            assert verdict in ("VALID", "INVALID"), "[LLM_ERROR] invalid verdict"
+            assert confidence in (60, 70), "[LLM_ERROR] invalid confidence"
+
+            return {"verdict": verdict, "confidence": confidence}
+
+        def validator_fn(leader_result):
+            if not isinstance(leader_result, gl.vm.Return):
+                return False
+
+            leader_data = leader_result.calldata
+            verdict = leader_data.get("verdict")
+            confidence = leader_data.get("confidence")
+
+            validator_data = leader_fn()
+
+            return (
+                verdict == validator_data.get("verdict")
+                and confidence == validator_data.get("confidence")
+            )
+
+        result = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
+
+        ev.verdict = result["verdict"]
+        ev.confidence = u256(result["confidence"])
+        ev.status = "RESOLVED"
+        self.evidences[evidence_id] = ev
+
+        return result
 
     # ================= VIEW =================
 
@@ -122,6 +218,37 @@ class EvidenceCorroboration(gl.Contract):
             return "NOT_FOUND"
         ev = self.evidences[evidence_id]
         return f"{ev.status}:{ev.verdict}:{int(ev.confidence)}"
+
+    @gl.public.view
+    def get_evidence_details(self, evidence_id: u256) -> str:
+        if evidence_id not in self.evidences:
+            return "NOT_FOUND"
+        ev = self.evidences[evidence_id]
+        return json.dumps({
+            "id": int(ev.evidence_id),
+            "agent": str(ev.agent),
+            "content": ev.content,
+            "verdict": ev.verdict,
+            "confidence": int(ev.confidence),
+            "status": ev.status
+        })
+
+    @gl.public.view
+    def list_evidences(self) -> str:
+        items = []
+        for key in self.evidences:
+            ev = self.evidences[key]
+            items.append(f"{int(ev.evidence_id)}:{ev.status}")
+        return ",".join(items)
+
+    @gl.public.view
+    def get_agent_evidences(self, agent: str) -> str:
+        items = []
+        for key in self.evidences:
+            ev = self.evidences[key]
+            if str(ev.agent) == agent:
+                items.append(str(int(ev.evidence_id)))
+        return ",".join(items)
 
     # ================= REQUIRED NONDET PLACEHOLDER =================
 

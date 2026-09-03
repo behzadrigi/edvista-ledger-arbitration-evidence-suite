@@ -97,46 +97,60 @@ class EvidenceCorroboration(gl.Contract):
 
         def leader_fn():
             prompt = f"""
-            STRICT MODE:
+            You are performing a STRICT evidence validity check.
 
             Evidence:
             {content}
 
-            Respond ONLY with JSON:
-            {{
-                "verdict": "VALID" or "INVALID",
-                "confidence": <integer: 80, 90>
-            }}
+            Decide whether this evidence is VALID or INVALID, and how
+            confident you are on a scale from 0 to 100.
+
+            Respond with ONLY a JSON object in exactly this format, and
+            nothing else. confidence must be a single whole number from
+            0 to 100 (for example 87), not a range and not text:
+            {{"verdict": "VALID" or "INVALID", "confidence": <a single integer 0-100>}}
             """
 
             response = gl.nondet.exec_prompt(prompt)
             try:
                 data = json.loads(response)
-            except:
+            except Exception:
                 raise gl.vm.UserError("[LLM_ERROR] invalid JSON")
 
             verdict = str(data.get("verdict", "")).upper()
-            confidence = int(data.get("confidence", 0))
+            try:
+                confidence = int(data.get("confidence", -1))
+            except (TypeError, ValueError):
+                raise gl.vm.UserError("[LLM_ERROR] invalid confidence")
 
             assert verdict in ("VALID", "INVALID"), "[LLM_ERROR] invalid verdict"
-            assert confidence in (80, 90), "[LLM_ERROR] invalid confidence"
+            assert 0 <= confidence <= 100, "[LLM_ERROR] confidence out of range"
 
             return {"verdict": verdict, "confidence": confidence}
 
         def validator_fn(leader_result):
+            # Strict Equality pattern: the categorical verdict must match
+            # exactly across independent runs. confidence is a real 0-100
+            # value and is not required to match exactly (two independent
+            # LLM runs will rarely land on the identical integer) — it is
+            # only validated as a well-formed number in range. This keeps
+            # "strict" meaningfully different from the tolerance-based
+            # "soft" evaluation below.
             if not isinstance(leader_result, gl.vm.Return):
                 return False
 
             leader_data = leader_result.calldata
-            verdict = leader_data.get("verdict")
-            confidence = leader_data.get("confidence")
+            leader_verdict = leader_data.get("verdict")
+            leader_confidence = leader_data.get("confidence")
+
+            if leader_verdict not in ("VALID", "INVALID"):
+                return False
+            if not isinstance(leader_confidence, int) or not (0 <= leader_confidence <= 100):
+                return False
 
             validator_data = leader_fn()
 
-            return (
-                verdict == validator_data.get("verdict")
-                and confidence == validator_data.get("confidence")
-            )
+            return leader_verdict == validator_data.get("verdict")
 
         result = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
 
@@ -147,7 +161,7 @@ class EvidenceCorroboration(gl.Contract):
 
         return result
 
-    # ================= SOFT EVALUATION =================
+    # ================= SOFT EVALUATION (Tolerance-Based Pattern) =================
 
     @gl.public.write
     def evaluate_evidence_soft(self, evidence_id: u256):
@@ -158,48 +172,71 @@ class EvidenceCorroboration(gl.Contract):
 
         content = ev.content
 
+        # Tolerance band for confidence agreement: two independent LLM runs
+        # rarely produce the identical confidence integer, but should land
+        # close together if they're genuinely reading the same evidence the
+        # same way. Validators agree if verdicts match exactly and the
+        # confidence scores are within this many points of each other.
+        CONFIDENCE_TOLERANCE = 10
+
         def leader_fn():
             prompt = f"""
-            SOFT MODE:
+            You are performing a SOFT evidence validity check, allowing for
+            reasonable interpretive judgment.
 
             Evidence:
             {content}
 
-            Respond ONLY with JSON:
-            {{
-                "verdict": "VALID" or "INVALID",
-                "confidence": <integer: 60, 70>
-            }}
+            Decide whether this evidence is VALID or INVALID, and how
+            confident you are on a scale from 0 to 100.
+
+            Respond with ONLY a JSON object in exactly this format, and
+            nothing else. confidence must be a single whole number from
+            0 to 100 (for example 63), not a range and not text:
+            {{"verdict": "VALID" or "INVALID", "confidence": <a single integer 0-100>}}
             """
 
             response = gl.nondet.exec_prompt(prompt)
             try:
                 data = json.loads(response)
-            except:
+            except Exception:
                 raise gl.vm.UserError("[LLM_ERROR] invalid JSON")
 
             verdict = str(data.get("verdict", "")).upper()
-            confidence = int(data.get("confidence", 0))
+            try:
+                confidence = int(data.get("confidence", -1))
+            except (TypeError, ValueError):
+                raise gl.vm.UserError("[LLM_ERROR] invalid confidence")
 
             assert verdict in ("VALID", "INVALID"), "[LLM_ERROR] invalid verdict"
-            assert confidence in (60, 70), "[LLM_ERROR] invalid confidence"
+            assert 0 <= confidence <= 100, "[LLM_ERROR] confidence out of range"
 
             return {"verdict": verdict, "confidence": confidence}
 
         def validator_fn(leader_result):
+            # Tolerance-Based pattern: the categorical verdict must still
+            # match exactly, but confidence only needs to be "close enough"
+            # (within CONFIDENCE_TOLERANCE points) rather than identical.
+            # This is a genuinely different agreement rule from the strict
+            # evaluation above, not just a different prompt.
             if not isinstance(leader_result, gl.vm.Return):
                 return False
 
             leader_data = leader_result.calldata
-            verdict = leader_data.get("verdict")
-            confidence = leader_data.get("confidence")
+            leader_verdict = leader_data.get("verdict")
+            leader_confidence = leader_data.get("confidence")
+
+            if leader_verdict not in ("VALID", "INVALID"):
+                return False
+            if not isinstance(leader_confidence, int) or not (0 <= leader_confidence <= 100):
+                return False
 
             validator_data = leader_fn()
 
-            return (
-                verdict == validator_data.get("verdict")
-                and confidence == validator_data.get("confidence")
-            )
+            if leader_verdict != validator_data.get("verdict"):
+                return False
+
+            return abs(leader_confidence - validator_data.get("confidence")) <= CONFIDENCE_TOLERANCE
 
         result = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
 

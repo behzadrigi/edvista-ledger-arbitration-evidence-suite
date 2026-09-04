@@ -1,14 +1,15 @@
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
 
+import json
+
 from genlayer import *
 from dataclasses import dataclass
-import json
 
 
 @allow_storage
 @dataclass
 class ArbitrationCase:
-    record_id: u256
+    complainant: Address
     agent: Address
     reason: str
     status: str
@@ -23,22 +24,26 @@ class ReputationArbitration(gl.Contract):
     def __init__(self):
         self.next_id = u256(0)
 
-    # ================= CREATE CASE =================
+    # ================= OPEN CASE =================
 
     @gl.public.write
-    def open_case(self, record_id: u256, agent: str, reason: str) -> u256:
+    def open_case(self, agent: str, reason: str) -> u256:
         assert reason.strip() != "", "Reason cannot be empty"
+
+        agent_address = Address(agent)
+        assert gl.message.sender_address != agent_address, \
+            "An agent cannot open a case against themselves; use ReputationLedger.propose_adjustment for self-reported changes"
 
         case_id = self.next_id
         self.next_id += u256(1)
 
         self.cases[case_id] = ArbitrationCase(
-            record_id=record_id,
-            agent=Address(agent),
+            complainant=gl.message.sender_address,
+            agent=agent_address,
             reason=reason,
             status="OPEN",
             delta=u256(0),
-            verdict=""
+            verdict="",
         )
 
         return case_id
@@ -56,18 +61,26 @@ class ReputationArbitration(gl.Contract):
 
         def leader_fn():
             prompt = f"""
-            You are an impartial reputation judge.
+            You are an impartial reputation arbitration judge reviewing a
+            formal complaint filed by one party against another.
 
-            Case reason:
+            Complaint reason:
             {reason}
 
             Respond ONLY with JSON:
             {{"verdict": "INCREASE" or "DECREASE", "delta": <integer>}}
 
             Rules:
-            - INCREASE: agent deserves higher reputation.
-            - DECREASE: agent deserves lower reputation.
-            - delta must be one of: 10, 20, 30.
+            - INCREASE: the complaint actually describes behavior that
+              reflects well on the agent (a misdirected or mistaken
+              complaint that, on review, supports the agent instead).
+            - DECREASE: the complaint describes a real, specific,
+              verifiable failure or violation by the agent.
+            - delta must be exactly one of: 10, 20, or 30, based on how
+              severe the described behavior is.
+            - If the reason is vague, unverifiable, or not a genuine
+              complaint, still choose the closest honest verdict, but
+              prefer the smallest delta (10).
             """
 
             response = gl.nondet.exec_prompt(prompt)
@@ -89,14 +102,16 @@ class ReputationArbitration(gl.Contract):
                 return False
 
             leader_data = leader_result.calldata
-            verdict = leader_data.get("verdict")
-            delta = leader_data.get("delta")
+            if leader_data.get("verdict") not in ("INCREASE", "DECREASE"):
+                return False
+            if leader_data.get("delta") not in (10, 20, 30):
+                return False
 
             validator_data = leader_fn()
 
             return (
-                verdict == validator_data.get("verdict")
-                and delta == validator_data.get("delta")
+                leader_data.get("verdict") == validator_data.get("verdict")
+                and leader_data.get("delta") == validator_data.get("delta")
             )
 
         result = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
@@ -109,18 +124,17 @@ class ReputationArbitration(gl.Contract):
         case.status = "RESOLVED"
         self.cases[case_id] = case
 
-        return {"verdict": verdict, "delta": int(delta)}
-
-    # ================= VIEW METHODS =================
+    # ================= PUBLIC VIEW METHODS =================
 
     @gl.public.view
     def get_case(self, case_id: u256) -> str:
         if case_id not in self.cases:
             return "NOT_FOUND"
         case = self.cases[case_id]
-        return f"{case.status}:{case.verdict}:{int(case.delta)}"
+        return case.status + ":" + case.verdict + ":" + str(int(case.delta))
 
-    # ================= REQUIRED NONDET PLACEHOLDER =================
-
-    def nondet(self):
-        return {"nondet": "noop"}
+    @gl.public.view
+    def get_case_agent(self, case_id: u256) -> str:
+        if case_id not in self.cases:
+            return "NOT_FOUND"
+        return str(self.cases[case_id].agent)

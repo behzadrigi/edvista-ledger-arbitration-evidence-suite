@@ -105,10 +105,14 @@ class EvidenceCorroboration(gl.Contract):
             Decide whether this evidence is VALID or INVALID, and how
             confident you are on a scale from 0 to 100.
 
-            Respond with ONLY a JSON object in exactly this format, and
-            nothing else. confidence must be a single whole number from
-            0 to 100 (for example 87), not a range and not text:
-            {{"verdict": "VALID" or "INVALID", "confidence": <a single integer 0-100>}}
+            Respond with ONLY a JSON object, nothing else, no explanation,
+            no markdown formatting. confidence must be a single whole
+            number from 0 to 100.
+
+            Example of a correctly formatted response:
+            {{"verdict": "VALID", "confidence": 87}}
+
+            Your response:
             """
 
             response = gl.nondet.exec_prompt(prompt)
@@ -173,11 +177,15 @@ class EvidenceCorroboration(gl.Contract):
         content = ev.content
 
         # Tolerance band for confidence agreement: two independent LLM runs
-        # rarely produce the identical confidence integer, but should land
-        # close together if they're genuinely reading the same evidence the
-        # same way. Validators agree if verdicts match exactly and the
-        # confidence scores are within this many points of each other.
-        CONFIDENCE_TOLERANCE = 10
+        # -- often from genuinely different model providers on GenLayer's
+        # validator panel -- rarely produce the identical confidence
+        # integer, and different providers have different "calibration"
+        # (some report consistently higher or lower confidence for the same
+        # judgment). A narrow tolerance treats that calibration gap as
+        # disagreement even when the underlying verdict reasoning agrees.
+        # Validators agree if verdicts match exactly and confidence scores
+        # are within this many points of each other.
+        CONFIDENCE_TOLERANCE = 30
 
         def leader_fn():
             prompt = f"""
@@ -190,10 +198,14 @@ class EvidenceCorroboration(gl.Contract):
             Decide whether this evidence is VALID or INVALID, and how
             confident you are on a scale from 0 to 100.
 
-            Respond with ONLY a JSON object in exactly this format, and
-            nothing else. confidence must be a single whole number from
-            0 to 100 (for example 63), not a range and not text:
-            {{"verdict": "VALID" or "INVALID", "confidence": <a single integer 0-100>}}
+            Respond with ONLY a JSON object, nothing else, no explanation,
+            no markdown formatting. confidence must be a single whole
+            number from 0 to 100.
+
+            Example of a correctly formatted response:
+            {{"verdict": "INVALID", "confidence": 63}}
+
+            Your response:
             """
 
             response = gl.nondet.exec_prompt(prompt)

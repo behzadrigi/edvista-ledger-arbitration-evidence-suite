@@ -1,14 +1,16 @@
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
 
+import json
+
 from genlayer import *
 from dataclasses import dataclass
-import json
 
 
 @allow_storage
 @dataclass
 class EvidenceRecord:
     evidence_id: u256
+    submitter: Address
     agent: Address
     content: str
     verdict: str
@@ -34,11 +36,12 @@ class EvidenceCorroboration(gl.Contract):
 
         self.evidences[eid] = EvidenceRecord(
             evidence_id=eid,
+            submitter=gl.message.sender_address,
             agent=Address(agent),
             content=content,
             verdict="",
             confidence=u256(0),
-            status="PENDING"
+            status="PENDING",
         )
 
         return eid
@@ -51,6 +54,8 @@ class EvidenceCorroboration(gl.Contract):
         assert new_content.strip() != "", "Content cannot be empty"
 
         ev = self.evidences[evidence_id]
+        assert gl.message.sender_address == ev.submitter, \
+            "Only the original submitter can update this evidence"
         assert ev.status == "PENDING", "Cannot update resolved evidence"
 
         ev.content = new_content
@@ -65,6 +70,8 @@ class EvidenceCorroboration(gl.Contract):
         assert evidence_id in self.evidences, "Evidence not found"
 
         ev = self.evidences[evidence_id]
+        assert gl.message.sender_address == ev.submitter, \
+            "Only the original submitter can delete this evidence"
         assert ev.status == "PENDING", "Cannot delete resolved evidence"
 
         del self.evidences[evidence_id]
@@ -77,6 +84,9 @@ class EvidenceCorroboration(gl.Contract):
         assert evidence_id in self.evidences, "Evidence not found"
 
         ev = self.evidences[evidence_id]
+        assert gl.message.sender_address == ev.submitter, \
+            "Only the original submitter can reset this evidence"
+
         ev.status = "PENDING"
         ev.verdict = ""
         ev.confidence = u256(0)
@@ -133,13 +143,6 @@ class EvidenceCorroboration(gl.Contract):
             return {"verdict": verdict, "confidence": confidence}
 
         def validator_fn(leader_result):
-            # Strict Equality pattern: the categorical verdict must match
-            # exactly across independent runs. confidence is a real 0-100
-            # value and is not required to match exactly (two independent
-            # LLM runs will rarely land on the identical integer) — it is
-            # only validated as a well-formed number in range. This keeps
-            # "strict" meaningfully different from the tolerance-based
-            # "soft" evaluation below.
             if not isinstance(leader_result, gl.vm.Return):
                 return False
 
@@ -176,15 +179,6 @@ class EvidenceCorroboration(gl.Contract):
 
         content = ev.content
 
-        # Tolerance band for confidence agreement: two independent LLM runs
-        # -- often from genuinely different model providers on GenLayer's
-        # validator panel -- rarely produce the identical confidence
-        # integer, and different providers have different "calibration"
-        # (some report consistently higher or lower confidence for the same
-        # judgment). A narrow tolerance treats that calibration gap as
-        # disagreement even when the underlying verdict reasoning agrees.
-        # Validators agree if verdicts match exactly and confidence scores
-        # are within this many points of each other.
         CONFIDENCE_TOLERANCE = 30
 
         def leader_fn():
@@ -226,11 +220,6 @@ class EvidenceCorroboration(gl.Contract):
             return {"verdict": verdict, "confidence": confidence}
 
         def validator_fn(leader_result):
-            # Tolerance-Based pattern: the categorical verdict must still
-            # match exactly, but confidence only needs to be "close enough"
-            # (within CONFIDENCE_TOLERANCE points) rather than identical.
-            # This is a genuinely different agreement rule from the strict
-            # evaluation above, not just a different prompt.
             if not isinstance(leader_result, gl.vm.Return):
                 return False
 
@@ -259,14 +248,14 @@ class EvidenceCorroboration(gl.Contract):
 
         return result
 
-    # ================= VIEW =================
+    # ================= PUBLIC VIEW METHODS =================
 
     @gl.public.view
     def get_evidence(self, evidence_id: u256) -> str:
         if evidence_id not in self.evidences:
             return "NOT_FOUND"
         ev = self.evidences[evidence_id]
-        return f"{ev.status}:{ev.verdict}:{int(ev.confidence)}"
+        return ev.status + ":" + ev.verdict + ":" + str(int(ev.confidence))
 
     @gl.public.view
     def get_evidence_details(self, evidence_id: u256) -> str:
@@ -275,11 +264,12 @@ class EvidenceCorroboration(gl.Contract):
         ev = self.evidences[evidence_id]
         return json.dumps({
             "id": int(ev.evidence_id),
+            "submitter": str(ev.submitter),
             "agent": str(ev.agent),
             "content": ev.content,
             "verdict": ev.verdict,
             "confidence": int(ev.confidence),
-            "status": ev.status
+            "status": ev.status,
         })
 
     @gl.public.view
@@ -287,7 +277,7 @@ class EvidenceCorroboration(gl.Contract):
         items = []
         for key in self.evidences:
             ev = self.evidences[key]
-            items.append(f"{int(ev.evidence_id)}:{ev.status}")
+            items.append(str(int(ev.evidence_id)) + ":" + ev.status)
         return ",".join(items)
 
     @gl.public.view
@@ -298,8 +288,3 @@ class EvidenceCorroboration(gl.Contract):
             if str(ev.agent) == agent:
                 items.append(str(int(ev.evidence_id)))
         return ",".join(items)
-
-    # ================= REQUIRED NONDET PLACEHOLDER =================
-
-    def nondet(self):
-        return {"nondet": "noop"}

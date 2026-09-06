@@ -50,3 +50,19 @@ evidence record. This was corrected so only the original submitter of
 an evidence record can modify or remove it, preventing a bad actor
 from tampering with or destroying evidence submitted by someone else
 before it can be evaluated.
+
+## Why ReputationLedger and ReputationArbitration now require a fetched evidence URL
+
+An earlier version of this suite let any LLM judge a purely
+caller-written reason with no independent verification. A steward
+review of a related suite (Deliverable Arbitration Suite) correctly
+flagged this exact pattern: payment and dispute decisions relying on
+caller-written evidence, with nothing retrieved or verified by the
+contract itself. Both `ReputationLedger.propose_adjustment` and
+`ReputationArbitration.evaluate_case` were rebuilt, before submission,
+to fetch a cited evidence_url via `gl.nondet.web.render` and require
+the LLM to judge whether the actual fetched content corroborates the
+claim, mirroring the pattern already used successfully in
+EvidenceCorroboration. `ReputationAdjustmentEngine.request_rollback`
+was left as-is, since it judges an already-recorded on-chain fact
+rather than an external claim, which does not carry the same risk.

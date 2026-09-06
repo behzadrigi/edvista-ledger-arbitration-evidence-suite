@@ -12,6 +12,7 @@ class ArbitrationCase:
     complainant: Address
     agent: Address
     reason: str
+    evidence_url: str
     status: str
     delta: u256
     verdict: str
@@ -27,8 +28,9 @@ class ReputationArbitration(gl.Contract):
     # ================= OPEN CASE =================
 
     @gl.public.write
-    def open_case(self, agent: str, reason: str) -> u256:
+    def open_case(self, agent: str, reason: str, evidence_url: str) -> u256:
         assert reason.strip() != "", "Reason cannot be empty"
+        assert evidence_url.strip() != "", "evidence_url cannot be empty"
 
         agent_address = Address(agent)
         assert gl.message.sender_address != agent_address, \
@@ -41,6 +43,7 @@ class ReputationArbitration(gl.Contract):
             complainant=gl.message.sender_address,
             agent=agent_address,
             reason=reason,
+            evidence_url=evidence_url,
             status="OPEN",
             delta=u256(0),
             verdict="",
@@ -48,7 +51,7 @@ class ReputationArbitration(gl.Contract):
 
         return case_id
 
-    # ================= NONDET ARBITRATION =================
+    # ================= NONDET ARBITRATION (NOW EVIDENCE-BACKED) =================
 
     @gl.public.write
     def evaluate_case(self, case_id: u256):
@@ -58,8 +61,11 @@ class ReputationArbitration(gl.Contract):
         assert case.status == "OPEN", "Case already resolved"
 
         reason = case.reason
+        evidence_url = case.evidence_url
 
         def leader_fn():
+            page_content = gl.nondet.web.render(evidence_url, mode='html')
+
             prompt = f"""
             You are an impartial reputation arbitration judge reviewing a
             formal complaint filed by one party against another.
@@ -67,20 +73,25 @@ class ReputationArbitration(gl.Contract):
             Complaint reason:
             {reason}
 
+            Content fetched from the evidence URL the complainant cited:
+            {page_content}
+
+            First, decide whether the fetched page content actually
+            supports the complaint reason with specific, verifiable
+            detail. If it does not, the complaint is unsubstantiated.
+
             Respond ONLY with JSON:
             {{"verdict": "INCREASE" or "DECREASE", "delta": <integer>}}
 
             Rules:
-            - INCREASE: the complaint actually describes behavior that
-              reflects well on the agent (a misdirected or mistaken
-              complaint that, on review, supports the agent instead).
-            - DECREASE: the complaint describes a real, specific,
-              verifiable failure or violation by the agent.
+            - DECREASE: the fetched page content substantiates a real,
+              specific, verifiable failure or violation by the agent.
+            - INCREASE: the fetched page content does NOT substantiate
+              the complaint, or actually reflects well on the agent
+              instead (an unsubstantiated or misdirected complaint).
             - delta must be exactly one of: 10, 20, or 30, based on how
-              severe the described behavior is.
-            - If the reason is vague, unverifiable, or not a genuine
-              complaint, still choose the closest honest verdict, but
-              prefer the smallest delta (10).
+              severe the substantiated behavior is (10 for weak or
+              unsubstantiated, 30 for severe and well-substantiated).
             """
 
             response = gl.nondet.exec_prompt(prompt)

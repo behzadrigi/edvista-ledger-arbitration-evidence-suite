@@ -39,16 +39,19 @@ class ReputationLedger(gl.Contract):
             history="[REGISTERED:0]",
         )
 
-    # ================= CONSENSUS-JUDGED ADJUSTMENT =================
+    # ================= CONSENSUS-JUDGED, EVIDENCE-BACKED ADJUSTMENT =================
 
     @gl.public.write
-    def propose_adjustment(self, agent: str, direction: str, amount: u256, reason: str):
+    def propose_adjustment(
+        self, agent: str, direction: str, amount: u256, reason: str, evidence_url: str
+    ):
         agent_address = Address(agent)
         assert agent_address in self.records, "Agent is not registered"
 
         direction_upper = direction.upper()
         _validate_direction(direction_upper)
         assert reason.strip() != "", "reason cannot be empty"
+        assert evidence_url.strip() != "", "evidence_url cannot be empty"
 
         if direction_upper != "RESET":
             assert int(amount) > 0, "amount must be positive for INCREASE or DECREASE"
@@ -57,6 +60,8 @@ class ReputationLedger(gl.Contract):
         current_score = int(record.score)
 
         def leader_fn():
+            page_content = gl.nondet.web.render(evidence_url, mode='html')
+
             prompt = f"""
             You are reviewing a proposed reputation score adjustment on a
             decentralized reputation ledger.
@@ -66,11 +71,14 @@ class ReputationLedger(gl.Contract):
             Reason given for this change:
             {reason}
 
-            Approve the change only if the reason describes a specific,
-            concrete, verifiable action or behavior that would reasonably
-            justify this kind of reputation change. Reject vague reasons,
-            reasons with no real justification, or reasons that appear to
-            be spam or an attempt to game the system.
+            Content fetched from the evidence URL the proposer cited:
+            {page_content}
+
+            Approve the change ONLY if the fetched page content actually
+            supports the stated reason with specific, verifiable detail.
+            Reject if the page does not corroborate the reason, is
+            unrelated, or the reason is vague even where the page might be
+            relevant.
 
             Respond with ONLY a JSON object in exactly this format,
             and nothing else:
